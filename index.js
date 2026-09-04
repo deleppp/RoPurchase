@@ -77,6 +77,7 @@ app.post('/add-key', async (req, res) => {
         const keyStr = data.key || data.Key || data.code || data.Code;
         
         if (keyStr) {
+            // Force strict cleaning to prevent whitespace or case mismatches
             const cleanKey = String(keyStr).trim().toUpperCase();
             const rawCategory = data.category || data.Category || 'code';
             const normalizedCategory = rawCategory.toLowerCase() === 'file' ? 'file' : 'code';
@@ -88,9 +89,9 @@ app.post('/add-key', async (req, res) => {
                 expiresAt: Date.now() + 72 * 3600 * 1000,
                 player: data.player || data.Player || data.username || 'Unknown',
                 userId: Number(data.userId || data.UserId || data.userid || 0),
-                hasGamepass: Boolean(data.hasGamepass ?? data.HasGamepass ?? false),
-                hasAsset: Boolean(data.hasAsset ?? data.HasAsset ?? false),
-                inGroup: Boolean(data.inGroup ?? data.InGroup ?? false),
+                hasGamepass: Boolean(data.hasGamepass ?? data.HasGamepass ?? true), // Defaults to true if unconfigured
+                hasAsset: Boolean(data.hasAsset ?? data.HasAsset ?? true),
+                inGroup: Boolean(data.inGroup ?? data.InGroup ?? true),
                 requirementsMet: Boolean(data.requirementsMet ?? data.RequirementsMet ?? true),
                 redeemedByDiscordIds: [],
                 rewardCode: null,
@@ -105,10 +106,11 @@ app.post('/add-key', async (req, res) => {
                 category: normalizedCategory
             };
 
+            // Save directly with explicit key prefix
             await redis.set(`key:${cleanKey}`, JSON.stringify(keyData), { ex: 259200 });
 
-            console.log(`✅ [SUCCESS] Key registered dynamically in Redis: "${cleanKey}" for player ${keyData.player} [Product ID: ${keyData.productId}]`);
-            return res.status(200).json({ success: true, productId: keyData.productId });
+            console.log(`✅ [SUCCESS] Key registered dynamically in Redis: "key:${cleanKey}" for player ${keyData.player}`);
+            return res.status(200).json({ success: true, key: cleanKey, productId: keyData.productId });
         } else {
             console.warn('⚠️ [WARNING] Key creation failed. Missing key field in body:', req.body);
             return res.status(400).json({ success: false, error: 'Invalid key data: Missing key field' });
@@ -240,7 +242,7 @@ async function fetchKeyData(rawKey) {
             return { targetKey: cleanInput, keyData: parsedData };
         }
     } catch (err) {
-        console.error('❌ Error fetching key data from Redis:', err);
+        console.error(`❌ Error fetching key data from Redis for key:${cleanInput}:`, err);
     }
     return { targetKey: null, keyData: null };
 }
