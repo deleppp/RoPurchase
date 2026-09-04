@@ -66,6 +66,11 @@ app.use((req, res, next) => {
     next();
 });
 
+// Root route added here to prevent 404 on UptimeRobot pings and browser visits
+app.get('/', (req, res) => {
+    res.status(200).send('Bot and Bridge Server are online!');
+});
+
 app.post('/add-key', async (req, res) => {
     try {
         console.log(`📥 [BRIDGE] Received body from Roblox:`, req.body);
@@ -102,7 +107,7 @@ app.post('/add-key', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`HTTP Bridge Server listening on port ${PORT}`);
 });
 
