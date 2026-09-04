@@ -76,48 +76,41 @@ app.post('/add-key', async (req, res) => {
         const data = req.body || {};
         const keyStr = data.key || data.Key || data.code || data.Code;
         
-        if (keyStr) {
-            // Force strict cleaning to prevent whitespace or case mismatches
-            const cleanKey = String(keyStr).trim().toUpperCase();
-            const rawCategory = data.category || data.Category || 'code';
-            const normalizedCategory = rawCategory.toLowerCase() === 'file' ? 'file' : 'code';
-        
-            const keyData = {
-                used: false,
-                usesLeft: Number(data.uses || data.maxUses || 1),
-                maxUses: Number(data.uses || data.maxUses || 1),
-                expiresAt: Date.now() + 72 * 3600 * 1000,
-                player: data.player || data.Player || data.username || 'Unknown',
-                userId: Number(data.userId || data.UserId || data.userid || 0),
-                hasGamepass: Boolean(data.hasGamepass ?? data.HasGamepass ?? true), // Defaults to true if unconfigured
-                hasAsset: Boolean(data.hasAsset ?? data.HasAsset ?? true),
-                inGroup: Boolean(data.inGroup ?? data.InGroup ?? true),
-                requirementsMet: Boolean(data.requirementsMet ?? data.RequirementsMet ?? true),
-                redeemedByDiscordIds: [],
-                rewardCode: null,
-                rewardFileUrl: null,
-                rewardFileName: data.fileName || data.FileName || data.rewardFileName || null,
-                productId: data.productId || data.ProductId || Math.floor(100000 + Math.random() * 900000),
-                uniqueId: data.uniqueId || data.UniqueId || `PROD-${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
-                gamepassId: data.gamepassId || data.GamepassId || null,
-                assetId: data.assetId || data.AssetId || null,
-                groupId: data.groupId || data.GroupId || null,
-                itemId: null,
-                category: normalizedCategory
-            };
-
-            // Save directly with explicit key prefix
-            await redis.set(`key:${cleanKey}`, JSON.stringify(keyData), { ex: 259200 });
-
-            console.log(`✅ [SUCCESS] Key registered dynamically in Redis: "key:${cleanKey}" for player ${keyData.player}`);
-            return res.status(200).json({ success: true, key: cleanKey, productId: keyData.productId });
-        } else {
-            console.warn('⚠️ [WARNING] Key creation failed. Missing key field in body:', req.body);
-            return res.status(400).json({ success: false, error: 'Invalid key data: Missing key field' });
+        if (!keyStr) {
+            console.warn('⚠️ [WARNING] Key creation failed. Missing key field.');
+            return res.status(400).json({ success: false, error: 'Missing key field' });
         }
+
+        const cleanKey = String(keyStr).trim().toUpperCase();
+        
+        // Strict mapping: Do NOT fake requirements if they weren't explicitly passed
+        const keyData = {
+            used: false,
+            usesLeft: Number(data.uses || 1),
+            maxUses: Number(data.uses || 1),
+            expiresAt: Date.now() + 72 * 3600 * 1000,
+            player: data.player || 'Unknown',
+            userId: Number(data.userId || 0),
+            hasGamepass: Boolean(data.hasGamepass), // Will be false if not owned
+            hasAsset: Boolean(data.hasAsset),
+            inGroup: Boolean(data.inGroup),
+            requirementsMet: Boolean(data.requirementsMet), 
+            rewardFileName: data.fileName || null,
+            // Only assign a productId if explicitly provided; otherwise leave null/undefined
+            productId: data.productId ? Number(data.productId) : null,
+            gamepassId: data.gamepassId ? Number(data.gamepassId) : null,
+            assetId: data.assetId ? Number(data.assetId) : null,
+            groupId: data.groupId ? Number(data.groupId) : null,
+            category: data.category || 'code'
+        };
+
+        await redis.set(`key:${cleanKey}`, JSON.stringify(keyData), { ex: 259200 });
+
+        console.log(`✅ [SUCCESS] Stored key "key:${cleanKey}" in Redis.`);
+        return res.status(200).json({ success: true, key: cleanKey });
     } catch (err) {
-        console.error('❌ [ERROR] Bad JSON received from Roblox bridge:', err);
-        return res.status(400).json({ success: false, error: 'Bad JSON' });
+        console.error('❌ [ERROR] Server error on /add-key:', err);
+        return res.status(500).json({ success: false, error: 'Internal Server Error' });
     }
 });
 
