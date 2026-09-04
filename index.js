@@ -66,7 +66,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// Root route added here to prevent 404 on UptimeRobot pings and browser visits
 app.get('/', (req, res) => {
     res.status(200).send('Bot and Bridge Server are online!');
 });
@@ -267,7 +266,6 @@ async function processRedemption(interaction, inputKey) {
     let fileItem = null;
     let codeContent = null;
 
-    // Grab ONLY ONE reward (Prioritizes file if available, otherwise takes a code)
     if (fileIndex !== -1) {
         fileItem = stockDB.file[fileIndex];
         stockDB.file[fileIndex].used = true;
@@ -482,7 +480,8 @@ client.on('interactionCreate', async interaction => {
                 );
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('🎁 Redeem Key').setStyle(ButtonStyle.Primary)
+                new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('🎁 Redeem Key').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setLabel('🛒 Gamepass').setStyle(ButtonStyle.Link).setURL('https://www.roblox.com/game-pass/1968642508/Activation')
             );
 
             return interaction.editReply({ embeds: [helpEmbed], components: [row] });
