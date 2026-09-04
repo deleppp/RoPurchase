@@ -78,6 +78,8 @@ app.post('/add-key', async (req, res) => {
         
         if (keyStr) {
             const cleanKey = String(keyStr).trim().toUpperCase();
+            const rawCategory = data.category || data.Category || 'code';
+            const normalizedCategory = rawCategory.toLowerCase() === 'file' ? 'file' : 'code';
         
             const keyData = {
                 used: false,
@@ -90,12 +92,12 @@ app.post('/add-key', async (req, res) => {
                 rewardFileUrl: null,
                 rewardFileName: null,
                 itemId: null,
-                category: null
+                category: normalizedCategory
             };
 
             await redis.set(`key:${cleanKey}`, JSON.stringify(keyData), { ex: 259200 });
 
-            console.log(`✅ [SUCCESS] Key registered dynamically in Redis: "${cleanKey}" for player ${keyData.player} (${keyData.userId})`);
+            console.log(`✅ [SUCCESS] Key registered dynamically in Redis: "${cleanKey}" for player ${keyData.player} (${keyData.userId}) [Category: ${normalizedCategory.toUpperCase()}]`);
             return res.status(200).json({ success: true });
         } else {
             console.warn('⚠️ [WARNING] Key creation failed. Missing key field in body:', req.body);
@@ -269,29 +271,30 @@ async function processRedemption(interaction, inputKey) {
     }
 
     const stockDB = await loadStockDB();
-
-    const fileIndex = stockDB.file.findIndex(item => !item.used);
-    const codeIndex = stockDB.code.findIndex(item => !item.used);
-
-    if (fileIndex === -1 && codeIndex === -1) {
-        return interaction.editReply('⚠️ **Stock is completely empty!** Your key is valid, but rewards have run out. Please contact the administrator.');
-    }
+    const requestedCategory = keyData.category || 'code';
 
     let fileItem = null;
     let codeContent = null;
     let assignedId = 1;
-    let itemCategory = 'unknown';
+    let itemCategory = requestedCategory;
 
-    if (fileIndex !== -1) {
+    // Pull strictly from the targeted stock bucket corresponding to what the user selected in-game
+    if (requestedCategory === 'file') {
+        const fileIndex = stockDB.file.findIndex(item => !item.used);
+        if (fileIndex === -1) {
+            return interaction.editReply('⚠️ **Stock Error:** Game File stock is completely empty! Please contact the administrator.');
+        }
         fileItem = stockDB.file[fileIndex];
         stockDB.file[fileIndex].used = true;
         assignedId = stockDB.file[fileIndex].id || (fileIndex + 1);
-        itemCategory = 'file';
-    } else if (codeIndex !== -1) {
+    } else {
+        const codeIndex = stockDB.code.findIndex(item => !item.used);
+        if (codeIndex === -1) {
+            return interaction.editReply('⚠️ **Stock Error:** Code stock is completely empty! Please contact the administrator.');
+        }
         codeContent = stockDB.code[codeIndex].content;
         stockDB.code[codeIndex].used = true;
         assignedId = stockDB.code[codeIndex].id || (stockDB.file.length + codeIndex + 1);
-        itemCategory = 'code';
     }
 
     keyData.used = true;
@@ -330,7 +333,7 @@ async function processRedemption(interaction, inputKey) {
 
     try {
         const dmChannel = await interaction.user.createDM();
-        let dmText = `🎁 **Your Redeemed Rewards (${formattedId}):**\n`;
+        let dmText = `🎁 **Your Redeemed Rewards (${formattedId}) [Item Type: ${itemCategory.toUpperCase()}]:**\n`;
         if (codeContent) {
             dmText += `\n📌 **Code:**\n\`\`\`${codeContent}\`\`\``;
         }
@@ -417,12 +420,12 @@ client.on('interactionCreate', async interaction => {
                 const isJson = interaction.customId.startsWith('print_json_');
                 const fileContent = isJson ? JSON.stringify(receipt, null, 4) : 
                     `========================================\n` +
-                    `               RECEIPT                  \n` +
+                    `                RECEIPT                 \n` +
                     `========================================\n` +
                     `Receipt ID : ${receipt.receiptId}\n` +
                     `Key        : ${receipt.key}\n` +
                     `Player     : ${receipt.player} (${receipt.userId})\n` +
-                    `Category   : ${receipt.category}\n` +
+                    `Category   : ${receipt.category.toUpperCase()}\n` +
                     `Reward     : ${receipt.rewardName}\n` +
                     `Redeemed At: ${receipt.redeemedAt}\n` +
                     `========================================\n`;
@@ -540,10 +543,12 @@ client.on('interactionCreate', async interaction => {
             }
 
             const formattedId = keyData.itemId ? `#${String(keyData.itemId).padStart(5, '0')}` : 'N/A';
+            const itemTypeLabel = keyData.category ? keyData.category.toUpperCase() : 'UNKNOWN';
 
             return interaction.editReply(
                 `🔍 **Key Info:**\n` +
                 `- **Key:** \`${targetKey}\`\n` +
+                `- **Item Type:** \`${itemTypeLabel}\`\n` +
                 `- **Item ID:** \`${formattedId}\`\n` +
                 `- **Player:** \`${keyData.player}\` (ID: \`${keyData.userId}\`)\n` +
                 `- **Status:** ${keyData.used ? '🔴 **Redeemed**' : '🟢 **Active**'}\n` +
@@ -557,8 +562,8 @@ client.on('interactionCreate', async interaction => {
                 .setColor(0x0099FF)
                 .setTitle('🤖 Bot Instructions & Help')
                 .addFields(
-                    { name: '🛒 For Buyers', value: `1. Get 15-character key from Roblox.\n2. Click **Redeem Key** or use \`/redeemkey\` to get your file instantly sent to your DMs with receipt options.` },
-                    { name: '🛠️ For Admins', value: '• Use `/stock add category:file` and click the upload window to add real files.' }
+                    { name: '🛒 For Buyers', value: `1. Toggle your preferred reward type (Code/Game File) in-game.\n2. Get your key from Roblox and use \`/redeemkey\` to claim it.` },
+                    { name: '🛠️ For Admins', value: '• Use `/stock add category:code` with comma- or newline-separated values.\n• Use `/stock add category:file` with a file attachment.' }
                 );
 
             const row = new ActionRowBuilder().addComponents(
