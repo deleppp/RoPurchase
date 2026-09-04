@@ -264,8 +264,17 @@ async function processRedemption(interaction, inputKey) {
         return interaction.editReply('⚠️ **Stock is completely empty!** Your key is valid, but rewards have run out. Please contact the administrator.');
     }
 
-    let fileItem = fileIndex !== -1 ? stockDB.file[fileIndex] : null;
-    let codeContent = codeIndex !== -1 ? stockDB.code[codeIndex].content : null;
+    let fileItem = null;
+    let codeContent = null;
+
+    // Grab ONLY ONE reward (Prioritizes file if available, otherwise takes a code)
+    if (fileIndex !== -1) {
+        fileItem = stockDB.file[fileIndex];
+        stockDB.file[fileIndex].used = true;
+    } else if (codeIndex !== -1) {
+        codeContent = stockDB.code[codeIndex].content;
+        stockDB.code[codeIndex].used = true;
+    }
 
     keyData.used = true;
     keyData.redeemedByDiscordId = interaction.user.id;
@@ -274,13 +283,6 @@ async function processRedemption(interaction, inputKey) {
     keyData.rewardFileName = fileItem ? fileItem.name : null;
     
     await redis.set(`key:${targetKey}`, JSON.stringify(keyData));
-
-    if (fileIndex !== -1) {
-        stockDB.file[fileIndex].used = true;
-    }
-    if (codeIndex !== -1) {
-        stockDB.code[codeIndex].used = true;
-    }
     await saveStockDB(stockDB);
 
     let dmSuccessful = false;
@@ -419,7 +421,7 @@ client.on('interactionCreate', async interaction => {
                     const totalAvailable = stockDB.code.filter(i => !i.used).length;
                     return interaction.editReply(`✅ Successfully added **${itemsList.length}** items to **CODE** stock!\n📦 Available: **${totalAvailable}**`);
                 } 
-              
+            
                 if (category === 'file') {
                     if (!uploadedFile) {
                         return interaction.editReply('❌ **Error:** You must attach a file using the file upload option when adding game files.');
