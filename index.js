@@ -235,15 +235,21 @@ async function fetchKeyData(rawKey) {
     if (!rawKey) return { targetKey: null, keyData: null };
     const cleanInput = String(rawKey).trim().toUpperCase();
     
-    try {
-        const rawData = await redis.get(`key:${cleanInput}`);
-        if (rawData) {
-            const parsedData = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
-            return { targetKey: cleanInput, keyData: parsedData };
+    // Try looking up both with and without the prefix to catch any mismatch
+    const possibleKeys = [`key:${cleanInput}`, cleanInput];
+
+    for (const redisKey of possibleKeys) {
+        try {
+            const rawData = await redis.get(redisKey);
+            if (rawData) {
+                const parsedData = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+                return { targetKey: cleanInput, keyData: parsedData };
+            }
+        } catch (err) {
+            console.error(`❌ Error fetching ${redisKey} from Redis:`, err);
         }
-    } catch (err) {
-        console.error(`❌ Error fetching key data from Redis for key:${cleanInput}:`, err);
     }
+    
     return { targetKey: null, keyData: null };
 }
 
