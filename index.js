@@ -480,11 +480,20 @@ client.on('interactionCreate', async interaction => {
                 );
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('🎁 Redeem Key').setStyle(ButtonStyle.Primary),
-                new ButtonBuilder().setLabel('🛒 Gamepass').setStyle(ButtonStyle.Link).setURL('https://www.roblox.com/game-pass/1968642508/Activation')
+                new ButtonBuilder()
+                    .setCustomId('open_redeem_modal')
+                    .setLabel('🎁 Redeem Key')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setLabel('🛒 Gamepass')
+                    .setStyle(ButtonStyle.Link)
+                    .setURL('https://www.roblox.com/game-pass/1968642508/Activation')
             );
 
-            return interaction.editReply({ embeds: [helpEmbed], components: [row] });
+            return await interaction.editReply({ 
+                embeds: [helpEmbed], 
+                components: [row] 
+            });
         }
 
         if (interaction.commandName === 'credits') {
