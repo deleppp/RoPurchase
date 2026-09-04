@@ -88,7 +88,9 @@ app.post('/add-key', async (req, res) => {
                 redeemedByDiscordId: null,
                 rewardCode: null,
                 rewardFileUrl: null,
-                rewardFileName: null
+                rewardFileName: null,
+                itemId: null,
+                category: null
             };
 
             await redis.set(`key:${cleanKey}`, JSON.stringify(keyData), { ex: 259200 });
@@ -211,6 +213,18 @@ async function fetchKeyData(rawKey) {
     return { targetKey: null, keyData: null };
 }
 
+function buildReceiptData(keyData, targetKey) {
+    return {
+        receiptId: `#${String(keyData.itemId || 1).padStart(5, '0')}`,
+        key: targetKey,
+        player: keyData.player,
+        userId: keyData.userId,
+        category: keyData.category || 'unknown',
+        rewardName: keyData.rewardFileName || keyData.rewardCode || 'N/A',
+        redeemedAt: new Date().toISOString()
+    };
+}
+
 async function processRedemption(interaction, inputKey) {
     const { targetKey, keyData } = await fetchKeyData(inputKey);
 
@@ -265,13 +279,19 @@ async function processRedemption(interaction, inputKey) {
 
     let fileItem = null;
     let codeContent = null;
+    let assignedId = 1;
+    let itemCategory = 'unknown';
 
     if (fileIndex !== -1) {
         fileItem = stockDB.file[fileIndex];
         stockDB.file[fileIndex].used = true;
+        assignedId = stockDB.file[fileIndex].id || (fileIndex + 1);
+        itemCategory = 'file';
     } else if (codeIndex !== -1) {
         codeContent = stockDB.code[codeIndex].content;
         stockDB.code[codeIndex].used = true;
+        assignedId = stockDB.code[codeIndex].id || (stockDB.file.length + codeIndex + 1);
+        itemCategory = 'code';
     }
 
     keyData.used = true;
@@ -279,6 +299,8 @@ async function processRedemption(interaction, inputKey) {
     keyData.rewardCode = codeContent;
     keyData.rewardFileUrl = fileItem ? fileItem.url : null;
     keyData.rewardFileName = fileItem ? fileItem.name : null;
+    keyData.itemId = assignedId;
+    keyData.category = itemCategory;
     
     await redis.set(`key:${targetKey}`, JSON.stringify(keyData));
     await saveStockDB(stockDB);
@@ -294,9 +316,21 @@ async function processRedemption(interaction, inputKey) {
         }
     }
 
+    const formattedId = `#${String(assignedId).padStart(5, '0')}`;
+    const actionRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`print_txt_${targetKey}`)
+            .setLabel('Print as .txt')
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(`print_json_${targetKey}`)
+            .setLabel('Print as .json')
+            .setStyle(ButtonStyle.Secondary)
+    );
+
     try {
         const dmChannel = await interaction.user.createDM();
-        let dmText = `🎁 **Your Redeemed Rewards:**\n`;
+        let dmText = `🎁 **Your Redeemed Rewards (${formattedId}):**\n`;
         if (codeContent) {
             dmText += `\n📌 **Code:**\n\`\`\`${codeContent}\`\`\``;
         }
@@ -305,7 +339,8 @@ async function processRedemption(interaction, inputKey) {
         }
         await dmChannel.send({
             content: dmText,
-            files: attachment ? [attachment] : []
+            files: attachment ? [attachment] : [],
+            components: [actionRow]
         });
         dmSuccessful = true;
     } catch (dmErr) {
@@ -318,11 +353,15 @@ async function processRedemption(interaction, inputKey) {
     }
 
     if (dmSuccessful) {
-        return interaction.editReply('✅ **Success!** Your reward items have been sent directly to your **DMs**! 📩');
+        return interaction.editReply({
+            content: `✅ **Success!** Your reward items (${formattedId}) have been sent directly to your **DMs**! 📩`,
+            components: [actionRow]
+        });
     } else {
         return interaction.editReply({
-            content: `✅ **Success!** (⚠️ *DMs are closed, so your items are displayed below*)\n\n${responseText}`,
-            files: attachment ? [attachment] : []
+            content: `✅ **Success! (${formattedId})** (⚠️ *DMs are closed, so your items are displayed below*)\n\n${responseText}`,
+            files: attachment ? [attachment] : [],
+            components: [actionRow]
         });
     }
 }
@@ -364,6 +403,39 @@ client.on('interactionCreate', async interaction => {
 
                 modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
                 return await interaction.showModal(modal);
+            }
+
+            if (interaction.customId.startsWith('print_txt_') || interaction.customId.startsWith('print_json_')) {
+                const targetKey = interaction.customId.replace(/print_(txt|json)_/, '');
+                const { keyData } = await fetchKeyData(targetKey);
+
+                if (!keyData) {
+                    return interaction.reply({ content: '❌ Error: Receipt data not found.', flags: [MessageFlags.Ephemeral] });
+                }
+
+                const receipt = buildReceiptData(keyData, targetKey);
+                const isJson = interaction.customId.startsWith('print_json_');
+                const fileContent = isJson ? JSON.stringify(receipt, null, 4) : 
+                    `========================================\n` +
+                    `               RECEIPT                  \n` +
+                    `========================================\n` +
+                    `Receipt ID : ${receipt.receiptId}\n` +
+                    `Key        : ${receipt.key}\n` +
+                    `Player     : ${receipt.player} (${receipt.userId})\n` +
+                    `Category   : ${receipt.category}\n` +
+                    `Reward     : ${receipt.rewardName}\n` +
+                    `Redeemed At: ${receipt.redeemedAt}\n` +
+                    `========================================\n`;
+
+                const attachment = new AttachmentBuilder(Buffer.from(fileContent, 'utf-8'), {
+                    name: `receipt_${receipt.receiptId.replace('#', '')}.${isJson ? 'json' : 'txt'}`
+                });
+
+                return interaction.reply({
+                    content: `📄 Here is your receipt (${receipt.receiptId}):`,
+                    files: [attachment],
+                    flags: [MessageFlags.Ephemeral]
+                });
             }
         }
 
@@ -407,17 +479,23 @@ client.on('interactionCreate', async interaction => {
                 const rawItems = interaction.options.getString('items');
                 const uploadedFile = interaction.options.getAttachment('file');
 
+                let nextId = 1;
+                if (stockDB.file.length > 0 || stockDB.code.length > 0) {
+                    const allIds = [...stockDB.file, ...stockDB.code].map(i => i.id || 0);
+                    nextId = Math.max(...allIds, 0) + 1;
+                }
+
                 if (category === 'code') {
                     if (!rawItems) {
                         return interaction.editReply('❌ **Error:** You must provide items text when adding codes.');
                     }
                     const itemsList = rawItems.split(/[\n,]+/).map(i => i.trim()).filter(i => i.length > 0);
                     for (const item of itemsList) {
-                        stockDB.code.push({ content: item, used: false });
+                        stockDB.code.push({ id: nextId++, content: item, used: false });
                     }
                     await saveStockDB(stockDB);
                     const totalAvailable = stockDB.code.filter(i => !i.used).length;
-                    return interaction.editReply(`✅ Successfully added **${itemsList.length}** items to **CODE** stock!\n📦 Available: **${totalAvailable}**`);
+                    return interaction.editReply(`✅ Successfully added **${itemsList.length}** items to **CODE** stock starting from **#${String(nextId - itemsList.length).padStart(5, '0')}**!\n📦 Available: **${totalAvailable}**`);
                 } 
             
                 if (category === 'file') {
@@ -425,13 +503,14 @@ client.on('interactionCreate', async interaction => {
                         return interaction.editReply('❌ **Error:** You must attach a file using the file upload option when adding game files.');
                     }
                     stockDB.file.push({ 
+                        id: nextId,
                         url: uploadedFile.url, 
                         name: uploadedFile.name, 
                         used: false 
                     });
                     await saveStockDB(stockDB);
                     const totalAvailable = stockDB.file.filter(i => !i.used).length;
-                    return interaction.editReply(`✅ Successfully added file **\`${uploadedFile.name}\`** to **FILE** stock!\n📦 Available: **${totalAvailable}**`);
+                    return interaction.editReply(`✅ Successfully added file **\`${uploadedFile.name}\`** as **#${String(nextId).padStart(5, '0')}** to **FILE** stock!\n📦 Available: **${totalAvailable}**`);
                 }
             }
 
@@ -460,9 +539,12 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply(`❌ **Error:** Key \`${inputKey}\` does not exist.`);
             }
 
+            const formattedId = keyData.itemId ? `#${String(keyData.itemId).padStart(5, '0')}` : 'N/A';
+
             return interaction.editReply(
                 `🔍 **Key Info:**\n` +
                 `- **Key:** \`${targetKey}\`\n` +
+                `- **Item ID:** \`${formattedId}\`\n` +
                 `- **Player:** \`${keyData.player}\` (ID: \`${keyData.userId}\`)\n` +
                 `- **Status:** ${keyData.used ? '🔴 **Redeemed**' : '🟢 **Active**'}\n` +
                 `- **Redeemed By:** ${keyData.redeemedByDiscordId ? `<@${keyData.redeemedByDiscordId}>` : 'None'}` +
@@ -475,7 +557,7 @@ client.on('interactionCreate', async interaction => {
                 .setColor(0x0099FF)
                 .setTitle('🤖 Bot Instructions & Help')
                 .addFields(
-                    { name: '🛒 For Buyers', value: `1. Get 15-character key from Roblox.\n2. Click **Redeem Key** or use \`/redeemkey\` to get your file instantly sent to your DMs.` },
+                    { name: '🛒 For Buyers', value: `1. Get 15-character key from Roblox.\n2. Click **Redeem Key** or use \`/redeemkey\` to get your file instantly sent to your DMs with receipt options.` },
                     { name: '🛠️ For Admins', value: '• Use `/stock add category:file` and click the upload window to add real files.' }
                 );
 
