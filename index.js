@@ -338,12 +338,12 @@ client.on('interactionCreate', async interaction => {
                     flags: [MessageFlags.Ephemeral]
                 });
             }
+            return;
         }
 
         if (!interaction.isChatInputCommand()) return;
 
-        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-
+        // Handle the 'setup' command first because it opens a modal (cannot be deferred)
         if (interaction.commandName === 'setup') {
             const modal = new ModalBuilder()
                 .setCustomId('setup_config_modal')
@@ -386,6 +386,9 @@ client.on('interactionCreate', async interaction => {
 
             return await interaction.showModal(modal);
         }
+
+        // For all other commands, defer the reply safely
+        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
         if (interaction.commandName === 'stock') {
             const stockDB = await loadStockDB();
