@@ -14,25 +14,23 @@ class KeyDatabase {
         }
     }
 
-    async saveKey(cleanKey, data) {
+async saveKey(cleanKey, data) {
         const formattedKey = String(cleanKey).trim().toUpperCase();
         const keyData = {
             used: Boolean(data.used),
+            usesLeft: Number(data.usesLeft ?? data.uses ?? 1),
+            maxUses: Number(data.maxUses ?? data.uses ?? 1),
             expiresAt: data.expiresAt || (Date.now() + 72 * 3600 * 1000),
             player: data.player || data.Player || 'Unknown',
             userId: Number(data.userId || data.UserId || 0),
-            hasGamepass: Boolean(data.hasGamepass ?? data.HasGamepass ?? true),
-            hasAsset: Boolean(data.hasAsset ?? data.HasAsset ?? true),
-            inGroup: Boolean(data.inGroup ?? data.InGroup ?? true),
+            assetIds: Array.isArray(data.assetIds) ? data.assetIds.map(Number) : [],
+            groupIds: Array.isArray(data.groupIds) ? data.groupIds.map(Number) : [],
             requirementsMet: Boolean(data.requirementsMet ?? data.RequirementsMet ?? true),
             redeemedByDiscordId: data.redeemedByDiscordId || null,
             rewardCode: data.rewardCode || null,
             rewardFileUrl: data.rewardFileUrl || data.rewardFile || null,
             rewardFileName: data.rewardFileName || null,
             productId: data.productId ? Number(data.productId) : null,
-            gamepassId: data.gamepassId ? Number(data.gamepassId) : null,
-            assetId: data.assetId ? Number(data.assetId) : null,
-            groupId: data.groupId ? Number(data.groupId) : null,
             category: data.category || 'code'
         };
         await this.redis.set(`key:${formattedKey}`, JSON.stringify(keyData), { ex: 259200 });
