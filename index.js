@@ -83,7 +83,6 @@ app.post('/add-key', async (req, res) => {
 
         const cleanKey = String(keyStr).trim().toUpperCase();
         
-        // Strict mapping: Do NOT fake requirements if they weren't explicitly passed
         const keyData = {
             used: false,
             usesLeft: Number(data.uses || 1),
@@ -91,12 +90,11 @@ app.post('/add-key', async (req, res) => {
             expiresAt: Date.now() + 72 * 3600 * 1000,
             player: data.player || 'Unknown',
             userId: Number(data.userId || 0),
-            hasGamepass: Boolean(data.hasGamepass), // Will be false if not owned
+            hasGamepass: Boolean(data.hasGamepass),
             hasAsset: Boolean(data.hasAsset),
             inGroup: Boolean(data.inGroup),
-            requirementsMet: Boolean(data.requirementsMet), 
+            requirementsMet: Boolean(data.requirementsMet),
             rewardFileName: data.fileName || null,
-            // Only assign a productId if explicitly provided; otherwise leave null/undefined
             productId: data.productId ? Number(data.productId) : null,
             gamepassId: data.gamepassId ? Number(data.gamepassId) : null,
             assetId: data.assetId ? Number(data.assetId) : null,
@@ -114,6 +112,132 @@ app.post('/add-key', async (req, res) => {
     }
 });
 
+app.post('/verify-key', async (req, res) => {
+    try {
+        const data = req.body || {};
+        const keyStr = data.key || data.Key || data.code || data.Code;
+
+        if (!keyStr) {
+            return res.status(400).json({ success: false, error: 'Missing key field' });
+        }
+
+        const cleanKey = String(keyStr).trim().toUpperCase();
+        const rawData = await redis.get(`key:${cleanKey}`);
+
+        if (!rawData) {
+            return res.status(404).json({ success: false, error: 'Key not found or expired' });
+        }
+
+        const keyData = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+
+        if (Date.now() > keyData.expiresAt) {
+            return res.status(400).json({ success: false, error: 'Key has expired' });
+        }
+
+        return res.status(200).json({ success: true, data: keyData });
+    } catch (err) {
+        console.error('❌ [ERROR] Server error on /verify-key:', err);
+        return res.status(500).json({ success: false, error: 'Internal Server Error' });
+    }
+});
+
+app.post('/redeem-key', async (req, res) => {
+    try {
+        const data = req.body || {};
+        const keyStr = data.key || data.Key || data.code || data.Code;
+        const discordId = data.discordId;
+
+        if (!keyStr || !discordId) {
+            return res.status(400).json({ success: false, error: 'Missing key or discordId field' });
+        }
+
+        const cleanKey = String(keyStr).trim().toUpperCase();
+        const rawData = await redis.get(`key:${cleanKey}`);
+
+        if (!rawData) {
+            return res.status(404).json({ success: false, error: 'Key not found' });
+        }
+
+        const keyData = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+
+        if (keyData.used || (keyData.usesLeft <= 0)) {
+            return res.status(400).json({ success: false, error: 'Key already used or out of uses' });
+        }
+
+        const stockDB = await loadStockDB();
+        const requestedCategory = keyData.category || 'code';
+
+        let fileItem = null;
+        let codeContent = null;
+        let assignedId = 1;
+
+        if (requestedCategory === 'file') {
+            const fileIndex = stockDB.file.findIndex(item => !item.used || (item.usesLeft && item.usesLeft > 0));
+            if (fileIndex === -1) return res.status(400).json({ success: false, error: 'Stock empty' });
+            fileItem = stockDB.file[fileIndex];
+            
+            if (fileItem.usesLeft && fileItem.usesLeft > 1) {
+                fileItem.usesLeft -= 1;
+            } else {
+                stockDB.file[fileIndex].used = true;
+                stockDB.file[fileIndex].usesLeft = 0;
+            }
+            assignedId = fileItem.id || (fileIndex + 1);
+        } else {
+            const codeIndex = stockDB.code.findIndex(item => !item.used || (item.usesLeft && item.usesLeft > 0));
+            if (codeIndex === -1) return res.status(400).json({ success: false, error: 'Stock empty' });
+            codeContent = stockDB.code[codeIndex].content;
+            
+            if (stockDB.code[codeIndex].usesLeft && stockDB.code[codeIndex].usesLeft > 1) {
+                stockDB.code[codeIndex].usesLeft -= 1;
+            } else {
+                stockDB.code[codeIndex].used = true;
+                stockDB.code[codeIndex].usesLeft = 0;
+            }
+            assignedId = stockDB.code[codeIndex].id || (codeIndex + 1);
+        }
+
+        keyData.used = true;
+        keyData.usesLeft = 0;
+        keyData.rewardCode = codeContent;
+        keyData.rewardFileUrl = fileItem ? fileItem.url : null;
+        keyData.rewardFileName = fileItem ? fileItem.name : (keyData.rewardFileName || null);
+        keyData.itemId = assignedId;
+
+        await redis.set(`key:${cleanKey}`, JSON.stringify(keyData));
+        await saveStockDB(stockDB);
+
+        try {
+            const discordUser = await client.users.fetch(discordId);
+            if (discordUser) {
+                const formattedId = `#${String(assignedId).padStart(5, '0')}`;
+                let dmText = `🎁 **Your Redeemed Rewards (${formattedId}) [Product ID: ${keyData.productId}]:**\n`;
+                if (codeContent) dmText += `\n📌 **Code:**\n\`\`\`${codeContent}\`\`\``;
+                if (fileItem) dmText += `\n📁 **Game File:** \`${fileItem.name}\``;
+
+                let attachment = null;
+                if (fileItem && fileItem.url) {
+                    try {
+                        attachment = new AttachmentBuilder(fileItem.url, { name: fileItem.name || 'game-file.rar' });
+                    } catch (e) {}
+                }
+
+                await discordUser.send({
+                    content: dmText,
+                    files: attachment ? [attachment] : []
+                });
+            }
+        } catch (dmErr) {
+            console.error(`⚠️ Could not send DM to user ${discordId}:`, dmErr.message);
+        }
+
+        return res.status(200).json({ success: true, reward: codeContent || fileItem?.name });
+    } catch (err) {
+        console.error('❌ [ERROR] Server error on /redeem-key:', err);
+        return res.status(500).json({ success: false, error: 'Internal Server Error' });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`HTTP Bridge Server listening on port ${PORT}`);
@@ -123,23 +247,6 @@ client.once('ready', async () => {
     console.log(`Bot logged in as ${client.user.tag}`);
 
     const commands = [
-        new SlashCommandBuilder()
-            .setName('redeemkey')
-            .setDescription('Redeem your activation key from the game')
-            .addStringOption(option =>
-                option.setName('key')
-                    .setDescription('Your activation key')
-                    .setRequired(true)
-        ),
-        new SlashCommandBuilder()
-            .setName('checkkey')
-            .setDescription('Check the status and data of an activation key (Admin Only)')
-            .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-            .addStringOption(option =>
-                option.setName('key')
-                    .setDescription('The activation key to look up')
-                    .setRequired(true)
-        ),
         new SlashCommandBuilder()
             .setName('setup')
             .setDescription('Configure Roblox integration requirements (Admin Only)')
@@ -161,42 +268,11 @@ client.once('ready', async () => {
                                 { name: 'Game File', value: 'file' }
                             )
                     )
-                    .addStringOption(option =>
-                        option.setName('items')
-                            .setDescription('Text items or codes')
-                            .setRequired(false)
-                    )
-                    .addAttachmentOption(option =>
-                        option.setName('file')
-                            .setDescription('Upload file directly')
-                            .setRequired(false)
-                    )
-                    .addIntegerOption(option =>
-                        option.setName('uses')
-                            .setDescription('Number of allowed redemptions per key/item')
-                            .setRequired(false)
-                    )
-                    .addStringOption(option =>
-                        option.setName('gamepass_id')
-                            .setDescription('Required Gamepass ID')
-                            .setRequired(false)
-                    )
-                    .addStringOption(option =>
-                        option.setName('asset_id')
-                            .setDescription('Required Asset ID (shirt, pants, etc.)')
-                            .setRequired(false)
-                    )
-                    .addStringOption(option =>
-                        option.setName('group_id')
-                            .setDescription('Required Group ID')
-                            .setRequired(false)
-                    )
+                    .addStringOption(option => option.setName('items').setDescription('Text items or codes').setRequired(false))
+                    .addAttachmentOption(option => option.setName('file').setDescription('Upload file directly').setRequired(false))
+                    .addIntegerOption(option => option.setName('uses').setDescription('Number of allowed redemptions per key/item').setRequired(false))
             )
-            .addSubcommand(subcommand =>
-                subcommand
-                    .setName('list')
-                    .setDescription('Check how many rewards are left in stock')
-            ),
+            .addSubcommand(subcommand => subcommand.setName('list').setDescription('Check how many rewards are left in stock')),
         new SlashCommandBuilder()
             .setName('help')
             .setDescription('Show instructions for buyers and developers'),
@@ -224,198 +300,6 @@ client.once('ready', async () => {
     }
 });
 
-async function fetchKeyData(rawKey) {
-    if (!rawKey) return { targetKey: null, keyData: null };
-    const cleanInput = String(rawKey).trim().toUpperCase();
-    
-    // Try looking up both with and without the prefix to catch any mismatch
-    const possibleKeys = [`key:${cleanInput}`, cleanInput];
-
-    for (const redisKey of possibleKeys) {
-        try {
-            const rawData = await redis.get(redisKey);
-            if (rawData) {
-                const parsedData = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
-                return { targetKey: cleanInput, keyData: parsedData };
-            }
-        } catch (err) {
-            console.error(`❌ Error fetching ${redisKey} from Redis:`, err);
-        }
-    }
-    
-    return { targetKey: null, keyData: null };
-}
-
-function buildReceiptData(keyData, targetKey) {
-    return {
-        receiptId: `#${String(keyData.itemId || 1).padStart(5, '0')}`,
-        productId: keyData.productId || 'N/A',
-        uniqueId: keyData.uniqueId || 'N/A',
-        key: targetKey,
-        player: keyData.player,
-        userId: keyData.userId,
-        category: keyData.category || 'unknown',
-        rewardName: keyData.rewardFileName || keyData.rewardCode || 'N/A',
-        redeemedAt: new Date().toISOString()
-    };
-}
-
-async function processRedemption(interaction, inputKey) {
-    const { targetKey, keyData } = await fetchKeyData(inputKey);
-
-    if (!keyData) {
-        return interaction.editReply(`❌ **Error:** Invalid activation key (\`${inputKey}\`). Not found in database.`);
-    }
-
-    if (Date.now() > keyData.expiresAt) {
-        return interaction.editReply('❌ **Error:** This key has expired (over 72 hours old).');
-    }
-
-    // Check requirements (Gamepass, Asset, Group)
-    if (keyData.requirementsMet === false || (!keyData.hasGamepass && keyData.gamepassId) || (!keyData.hasAsset && keyData.assetId) || (!keyData.inGroup && keyData.groupId)) {
-        return interaction.editReply(
-            `⚠️ **Requirements Not Met!**\n` +
-            `To redeem this key, you must fulfill the in-game requirements:\n` +
-            (keyData.gamepassId ? `• **Gamepass ID:** \`${keyData.gamepassId}\` (Prompted in-game)\n` : '') +
-            (keyData.assetId ? `• **Asset ID:** \`${keyData.assetId}\`\n` : '') +
-            (keyData.groupId ? `• **Group ID:** \`${keyData.groupId}\`\n` : '') +
-            `\nPlease open the game, complete the missing requirement prompts, and try again!`
-        );
-    }
-
-    // Multi-use support check
-    const discordId = interaction.user.id;
-    if (keyData.redeemedByDiscordIds && keyData.redeemedByDiscordIds.includes(discordId)) {
-        return interaction.editReply('❌ **Error:** You have already redeemed this key with your Discord account.');
-    }
-
-    if (keyData.used && (keyData.usesLeft <= 0 || !keyData.usesLeft)) {
-        return interaction.editReply('❌ **Error:** This key has completely run out of uses and cannot be redeemed again.');
-    }
-
-    const stockDB = await loadStockDB();
-    const requestedCategory = keyData.category || 'code';
-
-    let fileItem = null;
-    let codeContent = null;
-    let assignedId = 1;
-    let itemCategory = requestedCategory;
-
-    if (requestedCategory === 'file') {
-        const fileIndex = stockDB.file.findIndex(item => !item.used || (item.usesLeft && item.usesLeft > 0));
-        if (fileIndex === -1) {
-            return interaction.editReply('⚠️ **Stock Error:** Game File stock is completely empty! Please contact the administrator.');
-        }
-        fileItem = stockDB.file[fileIndex];
-        
-        if (fileItem.usesLeft && fileItem.usesLeft > 1) {
-            fileItem.usesLeft -= 1;
-        } else {
-            stockDB.file[fileIndex].used = true;
-            stockDB.file[fileIndex].usesLeft = 0;
-        }
-        assignedId = fileItem.id || (fileIndex + 1);
-    } else {
-        const codeIndex = stockDB.code.findIndex(item => !item.used || (item.usesLeft && item.usesLeft > 0));
-        if (codeIndex === -1) {
-            return interaction.editReply('⚠️ **Stock Error:** Code stock is completely empty! Please contact the administrator.');
-        }
-        codeContent = stockDB.code[codeIndex].content;
-        
-        if (stockDB.code[codeIndex].usesLeft && stockDB.code[codeIndex].usesLeft > 1) {
-            stockDB.code[codeIndex].usesLeft -= 1;
-        } else {
-            stockDB.code[codeIndex].used = true;
-            stockDB.code[codeIndex].usesLeft = 0;
-        }
-        assignedId = stockDB.code[codeIndex].id || (stockDB.file.length + codeIndex + 1);
-    }
-
-    // Handle multi-use tracking on the key itself
-    if (!keyData.redeemedByDiscordIds) keyData.redeemedByDiscordIds = [];
-    keyData.redeemedByDiscordIds.push(discordId);
-    
-    if (keyData.usesLeft > 1) {
-        keyData.usesLeft -= 1;
-    } else {
-        keyData.used = true;
-        keyData.usesLeft = 0;
-    }
-
-    keyData.rewardCode = codeContent;
-    keyData.rewardFileUrl = fileItem ? fileItem.url : null;
-    keyData.rewardFileName = fileItem ? fileItem.name : (keyData.rewardFileName || null);
-    keyData.itemId = assignedId;
-    keyData.category = itemCategory;
-    
-    await redis.set(`key:${targetKey}`, JSON.stringify(keyData));
-    await saveStockDB(stockDB);
-
-    let dmSuccessful = false;
-    let attachment = null;
-
-    if (fileItem && fileItem.url) {
-        try {
-            attachment = new AttachmentBuilder(fileItem.url, { name: fileItem.name || 'game-file.rar' });
-        } catch (e) {
-            console.error('❌ Failed to build attachment from URL:', e);
-        }
-    }
-
-    const formattedId = `#${String(assignedId).padStart(5, '0')}`;
-    const actionRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId(`print_txt_${targetKey}`)
-            .setLabel('Print as .txt')
-            .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-            .setCustomId(`print_json_${targetKey}`)
-            .setLabel('Print as .json')
-            .setStyle(ButtonStyle.Secondary)
-    );
-
-    try {
-        const dmChannel = await interaction.user.createDM();
-        let dmText = `🎁 **Your Redeemed Rewards (${formattedId}) [Product ID: ${keyData.productId}]:**\n`;
-        if (codeContent) {
-            dmText += `\n📌 **Code:**\n\`\`\`${codeContent}\`\`\``;
-        }
-        if (fileItem) {
-            dmText += `\n📁 **Game File:** \`${fileItem.name}\``;
-        } else if (keyData.rewardFileName) {
-            dmText += `\n📁 **Game File:** \`${keyData.rewardFileName}\``;
-        }
-        await dmChannel.send({
-            content: dmText,
-            files: attachment ? [attachment] : [],
-            components: [actionRow]
-        });
-        dmSuccessful = true;
-    } catch (dmErr) {
-        console.error(`⚠️ Could not send DM to user ${interaction.user.id}:`, dmErr.message);
-    }
-
-    let responseText = codeContent ? `📌 **Code:**\n\`\`\`${codeContent}\`\`\`` : '';
-    if (fileItem) {
-        responseText += `\n📁 **Game File:** \`${fileItem.name}\``;
-    } else if (keyData.rewardFileName) {
-        responseText += `\n📁 **Game File:** \`${keyData.rewardFileName}\``;
-    }
-
-    if (dmSuccessful) {
-        return interaction.editReply({
-            content: `✅ **Success!** Your reward items (${formattedId}, Product ID: \`${keyData.productId}\`) have been sent directly to your **DMs**! 📩`,
-            components: [actionRow]
-        });
-    } else {
-        return interaction.editReply({
-            content: `✅ **Success! (${formattedId})** (⚠️ *DMs are closed, so your items are displayed below*)\n\n${responseText}`,
-            files: attachment ? [attachment] : [],
-            components: [actionRow]
-        });
-    }
-}
-
 client.on('interactionCreate', async interaction => {
     try {
         if (interaction.isModalSubmit()) {
@@ -431,68 +315,11 @@ client.on('interactionCreate', async interaction => {
                     flags: [MessageFlags.Ephemeral]
                 });
             }
-
-            if (interaction.customId === 'redeem_modal') {
-                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-                const keyInput = interaction.fields.getTextInputValue('activation_key');
-                return await processRedemption(interaction, keyInput);
-            }
-        }
-
-        if (interaction.isButton()) {
-            if (interaction.customId === 'open_redeem_modal') {
-                const modal = new ModalBuilder()
-                    .setCustomId('redeem_modal')
-                    .setTitle('Redeem Activation Key');
-
-                const keyInput = new TextInputBuilder()
-                    .setCustomId('activation_key')
-                    .setLabel('Enter your activation key')
-                    .setPlaceholder('e.g., ABC12XYZ7890DEF')
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true);
-
-                modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
-                return await interaction.showModal(modal);
-            }
-
-            if (interaction.customId.startsWith('print_txt_') || interaction.customId.startsWith('print_json_')) {
-                const targetKey = interaction.customId.replace(/print_(txt|json)_/, '');
-                const { keyData } = await fetchKeyData(targetKey);
-
-                if (!keyData) {
-                    return interaction.reply({ content: '❌ Error: Receipt data not found.', flags: [MessageFlags.Ephemeral] });
-                }
-
-                const receipt = buildReceiptData(keyData, targetKey);
-                const isJson = interaction.customId.startsWith('print_json_');
-                const fileContent = isJson ? JSON.stringify(receipt, null, 4) : 
-                    `========================================\n` +
-                    `                     RECEIPT                    \n` +
-                    `========================================\n` +
-                    `Receipt ID : ${receipt.receiptId}\n` +
-                    `Product ID : ${receipt.productId}\n` +
-                    `Unique ID  : ${receipt.uniqueId}\n` +
-                    `Key        : ${receipt.key}\n` +
-                    `Player     : ${receipt.player} (${receipt.userId})\n` +
-                    `Category   : ${receipt.category.toUpperCase()}\n` +
-                    `Reward     : ${receipt.rewardName}\n` +
-                    `Redeemed At: ${receipt.redeemedAt}\n` +
-                    `========================================\n`;
-
-                const attachment = new AttachmentBuilder(Buffer.from(fileContent, 'utf-8'), {
-                    name: `receipt_${receipt.receiptId.replace('#', '')}.${isJson ? 'json' : 'txt'}`
-                });
-
-                return interaction.reply({
-                    content: `📄 Here is your receipt (${receipt.receiptId}):`,
-                    files: [attachment],
-                    flags: [MessageFlags.Ephemeral]
-                });
-            }
         }
 
         if (!interaction.isChatInputCommand()) return;
+
+        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
         if (interaction.commandName === 'setup') {
             const modal = new ModalBuilder()
@@ -529,8 +356,6 @@ client.on('interactionCreate', async interaction => {
             return await interaction.showModal(modal);
         }
 
-        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-
         if (interaction.commandName === 'stock') {
             const subcommand = interaction.options.getSubcommand();
             const stockDB = await loadStockDB();
@@ -540,9 +365,6 @@ client.on('interactionCreate', async interaction => {
                 const rawItems = interaction.options.getString('items');
                 const uploadedFile = interaction.options.getAttachment('file');
                 const customUses = interaction.options.getInteger('uses') || 1;
-                const gamepassId = interaction.options.getString('gamepass_id');
-                const assetId = interaction.options.getString('asset_id');
-                const groupId = interaction.options.getString('group_id');
 
                 let nextId = 1;
                 if (stockDB.file.length > 0 || stockDB.code.length > 0) {
@@ -566,10 +388,7 @@ client.on('interactionCreate', async interaction => {
                             usesLeft: customUses, 
                             maxUses: customUses,
                             productId,
-                            uniqueId,
-                            gamepassId,
-                            assetId,
-                            groupId
+                            uniqueId
                         });
                     }
                     await saveStockDB(stockDB);
@@ -589,10 +408,7 @@ client.on('interactionCreate', async interaction => {
                         usesLeft: customUses,
                         maxUses: customUses,
                         productId,
-                        uniqueId,
-                        gamepassId,
-                        assetId,
-                        groupId
+                        uniqueId
                     });
                     await saveStockDB(stockDB);
                     const totalAvailable = stockDB.file.filter(i => !i.used).length;
@@ -612,57 +428,16 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
-        if (interaction.commandName === 'redeemkey') {
-            const inputKey = interaction.options.getString('key');
-            return await processRedemption(interaction, inputKey);
-        }
-
-        if (interaction.commandName === 'checkkey') {
-            const inputKey = interaction.options.getString('key');
-            const { targetKey, keyData } = await fetchKeyData(inputKey);
-
-            if (!keyData) {
-                return interaction.editReply(`❌ **Error:** Key \`${inputKey}\` does not exist.`);
-            }
-
-            const formattedId = keyData.itemId ? `#${String(keyData.itemId).padStart(5, '0')}` : 'N/A';
-            const itemTypeLabel = keyData.category ? keyData.category.toUpperCase() : 'UNKNOWN';
-
-            return interaction.editReply(
-                `🔍 **Key Info:**\n` +
-                `- **Key:** \`${targetKey}\`\n` +
-                `- **Product ID:** \`${keyData.productId || 'N/A'}\`\n` +
-                `- **Unique ID:** \`${keyData.uniqueId || 'N/A'}\`\n` +
-                `- **Item Type:** \`${itemTypeLabel}\`\n` +
-                `- **Item ID:** \`${formattedId}\`\n` +
-                `- **Player:** \`${keyData.player}\` (ID: \`${keyData.userId}\`)\n` +
-                `- **Uses Left:** \`${keyData.usesLeft ?? 1}\` / \`${keyData.maxUses ?? 1}\`\n` +
-                `- **Status:** ${keyData.used ? '🔴 **Redeemed**' : '🟢 **Active**'}\n` +
-                `- **Requirements Met:** ${keyData.requirementsMet !== false ? '✅ Yes' : '❌ No'}` +
-                (keyData.rewardFileName ? `\n- **File Sent:** \`${keyData.rewardFileName}\`` : '')
-            );
-        }
-
         if (interaction.commandName === 'help') {
             const helpEmbed = new EmbedBuilder()
                 .setColor(0x0099FF)
                 .setTitle('🤖 Bot Instructions & Help')
                 .addFields(
-                    { name: '🛒 For Buyers', value: `1. Ensure you meet game requirements (Gamepass, Asset, Group) in-game.\n2. Get your key and use \`/redeemkey\` to claim rewards.` },
-                    { name: '🛠️ For Admins', value: '• Use `/stock add` to assign unique Product IDs, multi-use permissions, and asset/group/gamepass requirements.' }
+                    { name: '🛒 For Buyers', value: `1. Generate your key in-game.\n2. Open the check menu in-game to verify and redeem your key directly into your Discord DMs.` },
+                    { name: '🛠️ For Admins', value: '• Use `/stock add` to manage items, and use setup commands as needed.' }
                 );
 
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('open_redeem_modal')
-                    .setLabel('🎁 Redeem Key')
-                    .setStyle(ButtonStyle.Primary)
-            );
-
-            return await interaction.editReply({ 
-                embeds: [helpEmbed], 
-                components: [row] 
-            });
+            return await interaction.editReply({ embeds: [helpEmbed] });
         }
 
         if (interaction.commandName === 'credits') {
