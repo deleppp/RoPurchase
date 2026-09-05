@@ -238,21 +238,20 @@ app.post('/redeem-key', async (req, res) => {
     }
 });
 
-// Fixed check-requirements endpoint to accurately scan stock database fields
 app.post('/check-requirements', async (req, res) => {
     try {
         const data = req.body || {};
         const productId = Number(data.productId || data.ProductId);
 
         if (!productId) {
-            return res.status(400).json({ success: false, error: 'Missing productId field' });
+            return res.status(200).json({ success: false, error: 'Missing productId field' });
         }
 
         const stockDB = await loadStockDB();
         const matchedItem = [...stockDB.code, ...stockDB.file].find(item => Number(item.productId) === productId);
 
         if (!matchedItem) {
-            return res.status(404).json({ success: false, error: 'Product not found' });
+            return res.status(200).json({ success: false, error: 'Product not found in stock' });
         }
 
         return res.status(200).json({
