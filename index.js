@@ -132,6 +132,39 @@ app.post('/verify-key', async (req, res) => {
     }
 });
 
+app.post('/check-key', async (req, res) => {
+    try {
+        const data = req.body || {};
+        const keyStr = data.key || data.Key || data.code || data.Code;
+
+        if (!keyStr) {
+            return res.status(200).json({ success: false, valid: false, error: 'Missing key field' });
+        }
+
+        const cleanKey = String(keyStr).trim().toUpperCase();
+        const rawData = await redis.get(`key:${cleanKey}`);
+
+        if (!rawData) {
+            return res.status(200).json({ success: false, valid: false, error: 'Key not found' });
+        }
+
+        const keyData = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+        
+        if (Date.now() > keyData.expiresAt) {
+            return res.status(200).json({ success: false, valid: false, error: 'Key has expired' });
+        }
+
+        if (keyData.used || keyData.usesLeft <= 0) {
+            return res.status(200).json({ success: true, valid: false, used: true, error: 'Key already used' });
+        }
+
+        return res.status(200).json({ success: true, valid: true, used: false, data: keyData });
+    } catch (err) {
+        console.error('❌ [ERROR] Server error on /check-key:', err);
+        return res.status(500).json({ success: false, valid: false, error: 'Internal Server Error' });
+    }
+});
+
 app.post('/redeem-key', async (req, res) => {
     try {
         const data = req.body || {};
@@ -323,7 +356,15 @@ client.once('ready', async () => {
             .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
         new SlashCommandBuilder()
             .setName('sourcecode')
-            .setDescription('Get the GitHub source code link')
+            .setDescription('Get the GitHub source code link'),
+        new SlashCommandBuilder()
+            .setName('activate')
+            .setDescription('Activate a generated key and receive your reward in DMs')
+            .addStringOption(option =>
+                option.setName('key')
+                    .setDescription('Enter your working key here')
+                    .setRequired(true)
+            )
     ];
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -431,12 +472,96 @@ client.on('interactionCreate', async interaction => {
                     )
                 );
 
-                // showModal must be called immediately without deferring
                 return await interaction.showModal(modal);
             }
 
             // For all other commands, defer reply normally
             await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+            if (interaction.commandName === 'activate') {
+                const keyInput = interaction.options.getString('key').trim().toUpperCase();
+                const rawData = await redis.get(`key:${keyInput}`);
+
+                if (!rawData) {
+                    return interaction.editReply({ content: '❌ **Error:** Invalid, non-existent, or expired key.' });
+                }
+
+                const keyData = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+                
+                if (Date.now() > keyData.expiresAt) {
+                    return interaction.editReply({ content: '❌ **Error:** This key has expired.' });
+                }
+
+                if (keyData.used || keyData.usesLeft <= 0) {
+                    return interaction.editReply({ content: '⚠️ **Error:** This key has already been used.' });
+                }
+
+                const stockDB = await loadStockDB();
+                const requestedCategory = keyData.category || 'code';
+
+                let fileItem = null;
+                let codeContent = null;
+                let assignedId = 1;
+
+                if (requestedCategory === 'file') {
+                    const fileIndex = stockDB.file.findIndex(item => !item.used || (item.usesLeft && item.usesLeft > 0));
+                    if (fileIndex === -1) return interaction.editReply({ content: '❌ **Error:** Stock is empty.' });
+                    fileItem = stockDB.file[fileIndex];
+                    
+                    if (fileItem.usesLeft && fileItem.usesLeft > 1) {
+                        fileItem.usesLeft -= 1;
+                    } else {
+                        stockDB.file[fileIndex].used = true;
+                        stockDB.file[fileIndex].usesLeft = 0;
+                    }
+                    assignedId = fileItem.id || (fileIndex + 1);
+                } else {
+                    const codeIndex = stockDB.code.findIndex(item => !item.used || (item.usesLeft && item.usesLeft > 0));
+                    if (codeIndex === -1) return interaction.editReply({ content: '❌ **Error:** Stock is empty.' });
+                    codeContent = stockDB.code[codeIndex].content;
+                    
+                    if (stockDB.code[codeIndex].usesLeft && stockDB.code[codeIndex].usesLeft > 1) {
+                        stockDB.code[codeIndex].usesLeft -= 1;
+                    } else {
+                        stockDB.code[codeIndex].used = true;
+                        stockDB.code[codeIndex].usesLeft = 0;
+                    }
+                    assignedId = stockDB.code[codeIndex].id || (codeIndex + 1);
+                }
+
+                keyData.used = true;
+                keyData.usesLeft = 0;
+                keyData.rewardCode = codeContent;
+                keyData.rewardFileUrl = fileItem ? fileItem.url : null;
+                keyData.rewardFileName = fileItem ? fileItem.name : (keyData.rewardFileName || null);
+                keyData.itemId = assignedId;
+
+                await redis.set(`key:${keyInput}`, JSON.stringify(keyData));
+                await saveStockDB(stockDB);
+
+                try {
+                    const formattedId = `#${String(assignedId).padStart(5, '0')}`;
+                    let dmText = `🎁 **Your Redeemed Rewards (${formattedId}) [Product ID: ${keyData.productId}]:**\n`;
+                    if (codeContent) dmText += `\n📌 **Code:**\n\`\`\`${codeContent}\`\`\``;
+                    if (fileItem) dmText += `\n📁 **Game File:** \`${fileItem.name}\``;
+
+                    let attachment = null;
+                    if (fileItem && fileItem.url) {
+                        try {
+                            attachment = new AttachmentBuilder(fileItem.url, { name: fileItem.name || 'game-file.rar' });
+                        } catch (e) {}
+                    }
+
+                    await interaction.user.send({
+                        content: dmText,
+                        files: attachment ? [attachment] : []
+                    });
+
+                    return interaction.editReply({ content: '✅ **Success!** Check your Direct Messages for your reward.' });
+                } catch (dmErr) {
+                    return interaction.editReply({ content: '⚠️ Key is valid, but **failed to send you a DM**. Please open your DMs to receive rewards.' });
+                }
+            }
 
             if (interaction.commandName === 'stock') {
                 const stockDB = await loadStockDB();
@@ -453,7 +578,7 @@ client.on('interactionCreate', async interaction => {
                     .setColor(0x0099FF)
                     .setTitle('🤖 Bot Instructions & Help')
                     .addFields(
-                        { name: '🛒 For Buyers', value: `1. Generate your key in-game.\n2. Open the check menu in-game to verify and redeem your key directly into your Discord DMs.` },
+                        { name: '🛒 For Buyers', value: `1. Generate your key in-game.\n2. Use the \`/activate\` command with your working key to receive your reward directly into your Discord DMs.` },
                         { name: '🛠️ For Admins/Sellers', value: '• Use `/setup` to configure product requirements like Asset IDs or Group IDs alongside your stock codes.' }
                     );
 
