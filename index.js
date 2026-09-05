@@ -238,6 +238,36 @@ app.post('/redeem-key', async (req, res) => {
     }
 });
 
+app.post('/check-requirements', async (req, res) => {
+    try {
+        const data = req.body || {};
+        const productId = Number(data.productId || data.ProductId);
+
+        if (!productId) {
+            return res.status(400).json({ success: false, error: 'Missing productId field' });
+        }
+
+        const stockDB = await loadStockDB();
+        
+        // Search through your stored code or file stock items to find one matching this productId
+        const matchedItem = [...stockDB.code, ...stockDB.file].find(item => item.productId === productId);
+
+        if (!matchedItem) {
+            return res.status(404).json({ success: false, error: 'Product not found' });
+        }
+
+        // Return the requirements (assetId, groupId, etc.) tied to this product
+        return res.status(200).json({
+            success: true,
+            assetId: matchedItem.assetId || null,
+            groupId: matchedItem.groupId || null,
+        });
+    } catch (err) {
+        console.error('❌ [ERROR] Server error on /check-requirements:', err);
+        return res.status(500).json({ success: false, error: 'Internal Server Error' });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`HTTP Bridge Server listening on port ${PORT}`);
