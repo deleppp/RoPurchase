@@ -265,7 +265,6 @@ app.post('/check-requirements', async (req, res) => {
     }
 });
 
-// Added add-stock endpoint so Roblox in-game tools can push new product requirements seamlessly
 app.post('/add-stock', async (req, res) => {
     try {
         const data = req.body || {};
@@ -333,7 +332,7 @@ client.once('ready', async () => {
         new SlashCommandBuilder()
             .setName('sourcecode')
             .setDescription('Get the GitHub source code link')
-        ];
+    ];
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
@@ -353,8 +352,7 @@ client.on('interactionCreate', async interaction => {
             if (interaction.customId === 'setup_config_modal') {
                 const robloxId = interaction.fields.getTextInputValue('roblox_id');
                 const rewardType = interaction.fields.getTextInputValue('reward_type').trim().toLowerCase();
-                const rawCodes = interaction.fields.getTextInputValue('raw_codes');
-                const fileUrl = interaction.fields.getTextInputValue('file_url');
+                const rawInput = interaction.fields.getTextInputValue('raw_codes');
                 const assetIdInput = Number(interaction.fields.getTextInputValue('asset_id') || 0);
                 const groupIdInput = Number(interaction.fields.getTextInputValue('group_id') || 0);
 
@@ -370,8 +368,22 @@ client.on('interactionCreate', async interaction => {
                 const productId = Math.floor(100000 + Math.random() * 900000);
                 const uniqueId = `PROD-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
 
-                if (rewardType.includes('code') && rawCodes) {
-                    const itemsList = rawCodes.split(/[\n,]+/).map(i => i.trim()).filter(i => i.length > 0);
+                if (rewardType.includes('file') || (rawInput && rawInput.startsWith('http'))) {
+                    stockDB.file.push({ 
+                        id: nextId,
+                        url: rawInput, 
+                        name: rawInput.split('/').pop() || 'game-file.rar', 
+                        used: false,
+                        usesLeft: 1,
+                        maxUses: 1,
+                        productId,
+                        uniqueId,
+                        assetId: assetIdInput > 0 ? assetIdInput : null,
+                        groupId: groupIdInput > 0 ? groupIdInput : null
+                    });
+                    addedCount++;
+                } else if (rawInput) {
+                    const itemsList = rawInput.split(/[\n,]+/).map(i => i.trim()).filter(i => i.length > 0);
                     for (const item of itemsList) {
                         stockDB.code.push({ 
                             id: nextId++, 
@@ -386,20 +398,6 @@ client.on('interactionCreate', async interaction => {
                         });
                         addedCount++;
                     }
-                } else if (rewardType.includes('file') && fileUrl) {
-                    stockDB.file.push({ 
-                        id: nextId,
-                        url: fileUrl, 
-                        name: fileUrl.split('/').pop() || 'game-file.rar', 
-                        used: false,
-                        usesLeft: 1,
-                        maxUses: 1,
-                        productId,
-                        uniqueId,
-                        assetId: assetIdInput > 0 ? assetIdInput : null,
-                        groupId: groupIdInput > 0 ? groupIdInput : null
-                    });
-                    addedCount++;
                 }
 
                 await saveStockDB(stockDB);
@@ -436,10 +434,10 @@ client.on('interactionCreate', async interaction => {
 
             const codesInput = new TextInputBuilder()
                 .setCustomId('raw_codes')
-                .setLabel('Codes (One per line if Code type)')
-                .setPlaceholder('CODE1\nCODE2')
+                .setLabel('Codes (One per line) or File URL')
+                .setPlaceholder('CODE1\nCODE2 or https://example.com/file.rar')
                 .setStyle(TextInputStyle.Paragraph)
-                .setRequired(false);
+                .setRequired(true);
 
             const assetIdInput = new TextInputBuilder()
                 .setCustomId('asset_id')
@@ -456,11 +454,11 @@ client.on('interactionCreate', async interaction => {
                 .setRequired(false);
 
             modal.addComponents(
-                ActionRowBuilder.from({ components: [robloxIdInput] }),
-                ActionRowBuilder.from({ components: [rewardTypeInput] }),
-                ActionRowBuilder.from({ components: [codesInput] }),
-                ActionRowBuilder.from({ components: [assetIdInput] }),
-                ActionRowBuilder.from({ components: [groupIdInput] })
+                new ActionRowBuilder().addComponents(robloxIdInput),
+                new ActionRowBuilder().addComponents(rewardTypeInput),
+                new ActionRowBuilder().addComponents(codesInput),
+                new ActionRowBuilder().addComponents(assetIdInput),
+                new ActionRowBuilder().addComponents(groupIdInput)
             );
 
             return await interaction.showModal(modal);
