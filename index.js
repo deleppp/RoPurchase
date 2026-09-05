@@ -135,7 +135,9 @@ app.post('/verify-key', async (req, res) => {
 app.post('/check-key', async (req, res) => {
     try {
         const data = req.body || {};
-        const keyStr = data.key || data.Key || data.code || data.Code;
+        // Handle both direct JSON and Roblox RemoteFunction argument arrays/tables sent through the bridge
+        const bodyData = data.data || data; 
+        const keyStr = bodyData.key || bodyData.Key || bodyData.code || bodyData.Code || (Array.isArray(bodyData) ? bodyData[0] : null);
 
         if (!keyStr) {
             return res.status(200).json({ success: false, valid: false, error: 'Missing key field' });
