@@ -340,6 +340,7 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async interaction => {
     try {
+        // Handle Modal Submissions
         if (interaction.isModalSubmit() && interaction.customId === 'setup_config_modal') {
             await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
@@ -405,58 +406,36 @@ client.on('interactionCreate', async interaction => {
             });
         }
 
+        // Handle Slash Commands
         if (interaction.isChatInputCommand()) {
             if (interaction.commandName === 'setup') {
                 const modal = new ModalBuilder()
                     .setCustomId('setup_config_modal')
                     .setTitle('Setup Configuration & Requirements');
 
-                const robloxIdInput = new TextInputBuilder()
-                    .setCustomId('roblox_id')
-                    .setLabel('Your Roblox User / Seller ID')
-                    .setPlaceholder('e.g., 123456789')
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true);
-
-                const rewardTypeInput = new TextInputBuilder()
-                    .setCustomId('reward_type')
-                    .setLabel('Reward Type ("code" or "file")')
-                    .setPlaceholder('code')
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true);
-
-                const codesInput = new TextInputBuilder()
-                    .setCustomId('raw_codes')
-                    .setLabel('Codes (One per line) or File URL')
-                    .setPlaceholder('CODE1\nCODE2 or https://example.com/file.rar')
-                    .setStyle(TextInputStyle.Paragraph)
-                    .setRequired(true);
-
-                const assetIdInput = new TextInputBuilder()
-                    .setCustomId('asset_id')
-                    .setLabel('Required Asset / Gamepass IDs (Comma separated)')
-                    .setPlaceholder('e.g., 123, 456 (Leave blank if none)')
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(false);
-
-                const groupIdInput = new TextInputBuilder()
-                    .setCustomId('group_id')
-                    .setLabel('Required Group IDs (Comma separated)')
-                    .setPlaceholder('e.g., 987, 654 (Leave blank if none)')
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(false);
-
                 modal.addComponents(
-                    new ActionRowBuilder().addComponents(robloxIdInput),
-                    new ActionRowBuilder().addComponents(rewardTypeInput),
-                    new ActionRowBuilder().addComponents(codesInput),
-                    new ActionRowBuilder().addComponents(assetIdInput),
-                    new ActionRowBuilder().addComponents(groupIdInput)
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder().setCustomId('roblox_id').setLabel('Your Roblox User / Seller ID').setPlaceholder('123456789').setStyle(TextInputStyle.Short).setRequired(true)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder().setCustomId('reward_type').setLabel('Reward Type ("code" or "file")').setPlaceholder('code').setStyle(TextInputStyle.Short).setRequired(true)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder().setCustomId('raw_codes').setLabel('Codes (One per line) or File URL').setPlaceholder('CODE1\nCODE2').setStyle(TextInputStyle.Paragraph).setRequired(true)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder().setCustomId('asset_id').setLabel('Required Asset / Gamepass IDs').setPlaceholder('123, 456 (Optional)').setStyle(TextInputStyle.Short).setRequired(false)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder().setCustomId('group_id').setLabel('Required Group IDs').setPlaceholder('987, 654 (Optional)').setStyle(TextInputStyle.Short).setRequired(false)
+                    )
                 );
 
+                // showModal must be called immediately without deferring
                 return await interaction.showModal(modal);
             }
 
+            // For all other commands, defer reply normally
             await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
             if (interaction.commandName === 'stock') {
@@ -465,9 +444,7 @@ client.on('interactionCreate', async interaction => {
                 const fileAvailable = stockDB.file.filter(i => !i.used).length;
 
                 return interaction.editReply({
-                    content: `📦 **Stock Status Overview:**\n` +
-                             `• **Codes:** ${codeAvailable} available\n` +
-                             `• **Game Files:** ${fileAvailable} available`
+                    content: `📦 **Stock Status Overview:**\n• **Codes:** ${codeAvailable} available\n• **Game Files:** ${fileAvailable} available`
                 });
             }
 
@@ -512,7 +489,9 @@ client.on('interactionCreate', async interaction => {
     } catch (err) {
         console.error('❌ Error handling command interaction:', err);
         try {
-            if (interaction.deferred || interaction.replied) {
+            if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+                await interaction.reply({ content: '❌ An error occurred while processing this command.', flags: [MessageFlags.Ephemeral] }).catch(() => {});
+            } else if (interaction.deferred || interaction.replied) {
                 await interaction.editReply({ content: '❌ An error occurred while processing this command.' }).catch(() => {});
             }
         } catch (_) {}
