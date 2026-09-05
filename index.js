@@ -72,12 +72,10 @@ app.get('/', (req, res) => {
 
 app.post('/add-key', async (req, res) => {
     try {
-        console.log(`📥 [BRIDGE] Received body from Roblox:`, req.body);
         const data = req.body || {};
         const keyStr = data.key || data.Key || data.code || data.Code;
         
         if (!keyStr) {
-            console.warn('⚠️ [WARNING] Key creation failed. Missing key field.');
             return res.status(400).json({ success: false, error: 'Missing key field' });
         }
 
@@ -90,21 +88,15 @@ app.post('/add-key', async (req, res) => {
             expiresAt: Date.now() + 72 * 3600 * 1000,
             player: data.player || 'Unknown',
             userId: Number(data.userId || 0),
-            hasGamepass: Boolean(data.hasGamepass),
-            hasAsset: Boolean(data.hasAsset),
-            inGroup: Boolean(data.inGroup),
+            assetIds: Array.isArray(data.assetIds) ? data.assetIds.map(Number) : [],
+            groupIds: Array.isArray(data.groupIds) ? data.groupIds.map(Number) : [],
             requirementsMet: Boolean(data.requirementsMet),
             rewardFileName: data.fileName || null,
             productId: data.productId ? Number(data.productId) : null,
-            gamepassId: data.gamepassId ? Number(data.gamepassId) : null,
-            assetId: data.assetId ? Number(data.assetId) : null,
-            groupId: data.groupId ? Number(data.groupId) : null,
             category: data.category || 'code'
         };
 
         await redis.set(`key:${cleanKey}`, JSON.stringify(keyData), { ex: 259200 });
-
-        console.log(`✅ [SUCCESS] Stored key "key:${cleanKey}" in Redis.`);
         return res.status(200).json({ success: true, key: cleanKey });
     } catch (err) {
         console.error('❌ [ERROR] Server error on /add-key:', err);
@@ -129,7 +121,6 @@ app.post('/verify-key', async (req, res) => {
         }
 
         const keyData = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
-
         if (Date.now() > keyData.expiresAt) {
             return res.status(400).json({ success: false, error: 'Key has expired' });
         }
@@ -159,7 +150,6 @@ app.post('/redeem-key', async (req, res) => {
         }
 
         const keyData = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
-
         if (keyData.used || (keyData.usesLeft <= 0)) {
             return res.status(400).json({ success: false, error: 'Key already used or out of uses' });
         }
@@ -227,9 +217,7 @@ app.post('/redeem-key', async (req, res) => {
                     files: attachment ? [attachment] : []
                 });
             }
-        } catch (dmErr) {
-            console.error(`⚠️ Could not send DM to user ${discordId}:`, dmErr.message);
-        }
+        } catch (dmErr) {}
 
         return res.status(200).json({ success: true, reward: codeContent || fileItem?.name });
     } catch (err) {
@@ -254,10 +242,14 @@ app.post('/check-requirements', async (req, res) => {
             return res.status(200).json({ success: false, error: 'Product not found in stock' });
         }
 
+        // Properly map and fallback legacy singular fields to arrays
+        const assetIds = matchedItem.assetIds || (matchedItem.assetId ? [matchedItem.assetId] : []);
+        const groupIds = matchedItem.groupIds || (matchedItem.groupId ? [matchedItem.groupId] : []);
+
         return res.status(200).json({
             success: true,
-            assetId: matchedItem.assetId ? Number(matchedItem.assetId) : null,
-            groupId: matchedItem.groupId ? Number(matchedItem.groupId) : null,
+            assetIds: assetIds.map(Number),
+            groupIds: groupIds.map(Number),
         });
     } catch (err) {
         console.error('❌ [ERROR] Server error on /check-requirements:', err);
@@ -270,8 +262,9 @@ app.post('/add-stock', async (req, res) => {
         const data = req.body || {};
         const productId = Number(data.productId);
         const uses = Number(data.uses || 1);
-        const assetId = data.assetId ? Number(data.assetId) : null;
-        const groupId = data.groupId ? Number(data.groupId) : null;
+        
+        const assetIds = data.assetIds ? (Array.isArray(data.assetIds) ? data.assetIds.map(Number) : String(data.assetIds).split(',').map(Number)) : [];
+        const groupIds = data.groupIds ? (Array.isArray(data.groupIds) ? data.groupIds.map(Number) : String(data.groupIds).split(',').map(Number)) : [];
 
         if (!productId) {
             return res.status(400).json({ success: false, error: 'Missing productId' });
@@ -291,8 +284,8 @@ app.post('/add-stock', async (req, res) => {
             usesLeft: uses,
             maxUses: uses,
             productId: productId,
-            assetId: assetId,
-            groupId: groupId
+            assetIds: assetIds,
+            groupIds: groupIds
         });
 
         await saveStockDB(stockDB);
@@ -353,8 +346,13 @@ client.on('interactionCreate', async interaction => {
                 const robloxId = interaction.fields.getTextInputValue('roblox_id');
                 const rewardType = interaction.fields.getTextInputValue('reward_type').trim().toLowerCase();
                 const rawInput = interaction.fields.getTextInputValue('raw_codes');
-                const assetIdInput = Number(interaction.fields.getTextInputValue('asset_id') || 0);
-                const groupIdInput = Number(interaction.fields.getTextInputValue('group_id') || 0);
+                
+                // Parse comma-separated lists for multiple assets/groups from the modal inputs
+                const rawAssetInput = interaction.fields.getTextInputValue('asset_id') || '';
+                const assetIds = rawAssetInput.split(/[,,\s]+/).map(i => Number(i.trim())).filter(n => !isNaN(n) && n > 0);
+
+                const rawGroupInput = interaction.fields.getTextInputValue('group_id') || '';
+                const groupIds = rawGroupInput.split(/[,,\s]+/).map(i => Number(i.trim())).filter(n => !isNaN(n) && n > 0);
 
                 const stockDB = await loadStockDB();
                 let addedCount = 0;
@@ -378,8 +376,8 @@ client.on('interactionCreate', async interaction => {
                         maxUses: 1,
                         productId,
                         uniqueId,
-                        assetId: assetIdInput > 0 ? assetIdInput : null,
-                        groupId: groupIdInput > 0 ? groupIdInput : null
+                        assetIds: assetIds,
+                        groupIds: groupIds
                     });
                     addedCount++;
                 } else if (rawInput) {
@@ -393,8 +391,8 @@ client.on('interactionCreate', async interaction => {
                             maxUses: 1,
                             productId,
                             uniqueId,
-                            assetId: assetIdInput > 0 ? assetIdInput : null,
-                            groupId: groupIdInput > 0 ? groupIdInput : null
+                            assetIds: assetIds,
+                            groupIds: groupIds
                         });
                         addedCount++;
                     }
@@ -404,7 +402,7 @@ client.on('interactionCreate', async interaction => {
                 await redis.set('setup:config', JSON.stringify({ robloxId, rewardType }));
 
                 return await interaction.reply({
-                    content: `✅ **Setup Completed Successfully!**\n- **Roblox ID:** \`${robloxId || 'None'}\`\n- **Stock Items Added:** \`${addedCount}\`\n- **Product ID:** \`${productId}\`\n- **Required Asset ID:** \`${assetIdInput || 'None'}\`\n- **Required Group ID:** \`${groupIdInput || 'None'}\``,
+                    content: `✅ **Setup Completed Successfully!**\n- **Roblox ID:** \`${robloxId || 'None'}\`\n- **Stock Items Added:** \`${addedCount}\`\n- **Product ID:** \`${productId}\`\n- **Required Asset IDs:** \`${assetIds.length > 0 ? assetIds.join(', ') : 'None'}\`\n- **Required Group IDs:** \`${groupIds.length > 0 ? groupIds.join(', ') : 'None'}\``,
                     flags: [MessageFlags.Ephemeral]
                 });
             }
@@ -441,15 +439,15 @@ client.on('interactionCreate', async interaction => {
 
             const assetIdInput = new TextInputBuilder()
                 .setCustomId('asset_id')
-                .setLabel('Required Asset/Gamepass ID (Optional)')
-                .setPlaceholder('e.g., 1234567 (Leave blank if none)')
+                .setLabel('Required Asset / Gamepass IDs (Comma separated)')
+                .setPlaceholder('e.g., 123, 456 (Leave blank if none)')
                 .setStyle(TextInputStyle.Short)
                 .setRequired(false);
 
             const groupIdInput = new TextInputBuilder()
                 .setCustomId('group_id')
-                .setLabel('Required Group ID (Optional)')
-                .setPlaceholder('e.g., 9876543 (Leave blank if none)')
+                .setLabel('Required Group IDs (Comma separated)')
+                .setPlaceholder('e.g., 987, 654 (Leave blank if none)')
                 .setStyle(TextInputStyle.Short)
                 .setRequired(false);
 
