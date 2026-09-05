@@ -242,7 +242,6 @@ app.post('/check-requirements', async (req, res) => {
             return res.status(200).json({ success: false, error: 'Product not found in stock' });
         }
 
-        // Properly map and fallback legacy singular fields to arrays
         const assetIds = matchedItem.assetIds || (matchedItem.assetId ? [matchedItem.assetId] : []);
         const groupIds = matchedItem.groupIds || (matchedItem.groupId ? [matchedItem.groupId] : []);
 
@@ -343,11 +342,13 @@ client.on('interactionCreate', async interaction => {
     try {
         if (interaction.isModalSubmit()) {
             if (interaction.customId === 'setup_config_modal') {
+                // Instantly defer reply to prevent Discord's 3-second timeout error
+                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
                 const robloxId = interaction.fields.getTextInputValue('roblox_id');
                 const rewardType = interaction.fields.getTextInputValue('reward_type').trim().toLowerCase();
                 const rawInput = interaction.fields.getTextInputValue('raw_codes');
                 
-                // Parse comma-separated lists for multiple assets/groups from the modal inputs
                 const rawAssetInput = interaction.fields.getTextInputValue('asset_id') || '';
                 const assetIds = rawAssetInput.split(/[,,\s]+/).map(i => Number(i.trim())).filter(n => !isNaN(n) && n > 0);
 
@@ -401,9 +402,8 @@ client.on('interactionCreate', async interaction => {
                 await saveStockDB(stockDB);
                 await redis.set('setup:config', JSON.stringify({ robloxId, rewardType }));
 
-                return await interaction.reply({
-                    content: `✅ **Setup Completed Successfully!**\n- **Roblox ID:** \`${robloxId || 'None'}\`\n- **Stock Items Added:** \`${addedCount}\`\n- **Product ID:** \`${productId}\`\n- **Required Asset IDs:** \`${assetIds.length > 0 ? assetIds.join(', ') : 'None'}\`\n- **Required Group IDs:** \`${groupIds.length > 0 ? groupIds.join(', ') : 'None'}\``,
-                    flags: [MessageFlags.Ephemeral]
+                return await interaction.editReply({
+                    content: `✅ **Setup Completed Successfully!**\n- **Roblox ID:** \`${robloxId || 'None'}\`\n- **Stock Items Added:** \`${addedCount}\`\n- **Product ID:** \`${productId}\`\n- **Required Asset IDs:** \`${assetIds.length > 0 ? assetIds.join(', ') : 'None'}\`\n- **Required Group IDs:** \`${groupIds.length > 0 ? groupIds.join(', ') : 'None'}\``
                 });
             }
             return;
