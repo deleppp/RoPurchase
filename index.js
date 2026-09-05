@@ -334,7 +334,7 @@ client.on('interactionCreate', async interaction => {
                 await redis.set('setup:config', JSON.stringify({ robloxId, rewardType }));
 
                 return await interaction.reply({
-                    content: `✅ **Setup Completed Successfully!**\n- **Roblox ID / Seller ID:** \`${robloxId || 'None'}\`\n- **Reward Type:** \`${rewardType || 'code'}\`\n- **Stock Items Added:** \`${addedCount}\``,
+                    content: `✅ **Setup Completed Successfully!**\n- **Roblox ID / Seller ID:** \`${robloxId || 'None'}\`\n- **Reward Type:** \`${rewardType || 'code'}\`\n- **Stock Items Added:** \`${addedCount}\`\n- **Generated Product ID:** \`${productId}\`\n- **Batch Identifier:** \`${uniqueId}\``,
                     flags: [MessageFlags.Ephemeral]
                 });
             }
