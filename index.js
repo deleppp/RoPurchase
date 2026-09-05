@@ -249,30 +249,11 @@ client.once('ready', async () => {
     const commands = [
         new SlashCommandBuilder()
             .setName('setup')
-            .setDescription('Configure Roblox integration requirements (Admin Only)')
+            .setDescription('Configure Roblox integration, stock items, and Roblox ID (Admin Only)')
             .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
         new SlashCommandBuilder()
             .setName('stock')
-            .setDescription('Manage the reward stock (Admin Only)')
-            .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-            .addSubcommand(subcommand =>
-                subcommand
-                    .setName('add')
-                    .setDescription('Add rewards with custom uses, product ID, and requirements')
-                    .addStringOption(option =>
-                        option.setName('category')
-                            .setDescription('Reward category')
-                            .setRequired(true)
-                            .addChoices(
-                                { name: 'Code', value: 'code' },
-                                { name: 'Game File', value: 'file' }
-                            )
-                    )
-                    .addStringOption(option => option.setName('items').setDescription('Text items or codes').setRequired(false))
-                    .addAttachmentOption(option => option.setName('file').setDescription('Upload file directly').setRequired(false))
-                    .addIntegerOption(option => option.setName('uses').setDescription('Number of allowed redemptions per key/item').setRequired(false))
-            )
-            .addSubcommand(subcommand => subcommand.setName('list').setDescription('Check how many rewards are left in stock')),
+            .setDescription('Check how many rewards are left in stock'),
         new SlashCommandBuilder()
             .setName('help')
             .setDescription('Show instructions for buyers and developers'),
@@ -286,7 +267,7 @@ client.once('ready', async () => {
         new SlashCommandBuilder()
             .setName('sourcecode')
             .setDescription('Get the GitHub source code link')
-    ];
+        ];
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
@@ -303,15 +284,57 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
     try {
         if (interaction.isModalSubmit()) {
-            if (interaction.customId === 'setup_gamepass_modal') {
-                const gamepassId = interaction.fields.getTextInputValue('gamepass_id');
-                const assetId = interaction.fields.getTextInputValue('asset_id');
-                const groupId = interaction.fields.getTextInputValue('group_id');
+            if (interaction.customId === 'setup_config_modal') {
+                const robloxId = interaction.fields.getTextInputValue('roblox_id');
+                const rewardType = interaction.fields.getTextInputValue('reward_type').trim().toLowerCase();
+                const rawCodes = interaction.fields.getTextInputValue('raw_codes');
+                const fileUrl = interaction.fields.getTextInputValue('file_url');
 
-                await redis.set('setup:config', JSON.stringify({ gamepassId, assetId, groupId }));
+                const stockDB = await loadStockDB();
+                let addedCount = 0;
+
+                let nextId = 1;
+                if (stockDB.file.length > 0 || stockDB.code.length > 0) {
+                    const allIds = [...stockDB.file, ...stockDB.code].map(i => i.id || 0);
+                    nextId = Math.max(...allIds, 0) + 1;
+                }
+
+                const productId = Math.floor(100000 + Math.random() * 900000);
+                const uniqueId = `PROD-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
+
+                if (rewardType.includes('code') && rawCodes) {
+                    const itemsList = rawCodes.split(/[\n,]+/).map(i => i.trim()).filter(i => i.length > 0);
+                    for (const item of itemsList) {
+                        stockDB.code.push({ 
+                            id: nextId++, 
+                            content: item, 
+                            used: false, 
+                            usesLeft: 1, 
+                            maxUses: 1,
+                            productId,
+                            uniqueId
+                        });
+                        addedCount++;
+                    }
+                } else if (rewardType.includes('file') && fileUrl) {
+                    stockDB.file.push({ 
+                        id: nextId,
+                        url: fileUrl, 
+                        name: fileUrl.split('/').pop() || 'game-file.rar', 
+                        used: false,
+                        usesLeft: 1,
+                        maxUses: 1,
+                        productId,
+                        uniqueId
+                    });
+                    addedCount++;
+                }
+
+                await saveStockDB(stockDB);
+                await redis.set('setup:config', JSON.stringify({ robloxId, rewardType }));
 
                 return await interaction.reply({
-                    content: `✅ **Setup Completed Successfully!**\n- **Gamepass ID:** \`${gamepassId || 'None'}\`\n- **Asset ID:** \`${assetId || 'None'}\`\n- **Group ID:** \`${groupId || 'None'}\``,
+                    content: `✅ **Setup Completed Successfully!**\n- **Roblox ID / Seller ID:** \`${robloxId || 'None'}\`\n- **Reward Type:** \`${rewardType || 'code'}\`\n- **Stock Items Added:** \`${addedCount}\``,
                     flags: [MessageFlags.Ephemeral]
                 });
             }
@@ -323,109 +346,57 @@ client.on('interactionCreate', async interaction => {
 
         if (interaction.commandName === 'setup') {
             const modal = new ModalBuilder()
-                .setCustomId('setup_gamepass_modal')
-                .setTitle('Setup: Requirements Configuration');
+                .setCustomId('setup_config_modal')
+                .setTitle('Setup Configuration & Stock');
 
-            const gamepassInput = new TextInputBuilder()
-                .setCustomId('gamepass_id')
-                .setLabel('Gamepass ID (Optional)')
-                .setPlaceholder('e.g., 12345678')
+            const robloxIdInput = new TextInputBuilder()
+                .setCustomId('roblox_id')
+                .setLabel('Your Roblox User / Seller ID')
+                .setPlaceholder('e.g., 123456789')
                 .setStyle(TextInputStyle.Short)
+                .setRequired(true);
+
+            const rewardTypeInput = new TextInputBuilder()
+                .setCustomId('reward_type')
+                .setLabel('Reward Type ("code" or "file")')
+                .setPlaceholder('code')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true);
+
+            const codesInput = new TextInputBuilder()
+                .setCustomId('raw_codes')
+                .setLabel('Codes (One per line if Code type)')
+                .setPlaceholder('CODE1\nCODE2\nCODE3')
+                .setStyle(TextInputStyle.Paragraph)
                 .setRequired(false);
 
-            const assetInput = new TextInputBuilder()
-                .setCustomId('asset_id')
-                .setLabel('Asset ID (Optional Shirt/Pants/Accessory)')
-                .setPlaceholder('e.g., 87654321')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(false);
-
-            const groupInput = new TextInputBuilder()
-                .setCustomId('group_id')
-                .setLabel('Group ID (Optional)')
-                .setPlaceholder('e.g., 11223344')
+            const fileUrlInput = new TextInputBuilder()
+                .setCustomId('file_url')
+                .setLabel('File Direct URL (If File type)')
+                .setPlaceholder('https://example.com/file.rar')
                 .setStyle(TextInputStyle.Short)
                 .setRequired(false);
 
             modal.addComponents(
-                new ActionRowBuilder().addComponents(gamepassInput),
-                new ActionRowBuilder().addComponents(assetInput),
-                new ActionRowBuilder().addComponents(groupInput)
+                new ActionRowBuilder().addComponents(robloxIdInput),
+                new ActionRowBuilder().addComponents(rewardTypeInput),
+                new ActionRowBuilder().addComponents(codesInput),
+                new ActionRowBuilder().addComponents(fileUrlInput)
             );
 
             return await interaction.showModal(modal);
         }
 
         if (interaction.commandName === 'stock') {
-            const subcommand = interaction.options.getSubcommand();
             const stockDB = await loadStockDB();
-            
-            if (subcommand === 'add') {
-                const category = interaction.options.getString('category');
-                const rawItems = interaction.options.getString('items');
-                const uploadedFile = interaction.options.getAttachment('file');
-                const customUses = interaction.options.getInteger('uses') || 1;
+            const codeAvailable = stockDB.code.filter(i => !i.used).length;
+            const fileAvailable = stockDB.file.filter(i => !i.used).length;
 
-                let nextId = 1;
-                if (stockDB.file.length > 0 || stockDB.code.length > 0) {
-                    const allIds = [...stockDB.file, ...stockDB.code].map(i => i.id || 0);
-                    nextId = Math.max(...allIds, 0) + 1;
-                }
-
-                const productId = Math.floor(100000 + Math.random() * 900000);
-                const uniqueId = `PROD-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
-
-                if (category === 'code') {
-                    if (!rawItems) {
-                        return interaction.editReply('❌ **Error:** You must provide items text when adding codes.');
-                    }
-                    const itemsList = rawItems.split(/[\n,]+/).map(i => i.trim()).filter(i => i.length > 0);
-                    for (const item of itemsList) {
-                        stockDB.code.push({ 
-                            id: nextId++, 
-                            content: item, 
-                            used: false, 
-                            usesLeft: customUses, 
-                            maxUses: customUses,
-                            productId,
-                            uniqueId
-                        });
-                    }
-                    await saveStockDB(stockDB);
-                    const totalAvailable = stockDB.code.filter(i => !i.used).length;
-                    return interaction.editReply(`✅ Successfully added **${itemsList.length}** items to **CODE** stock (Product ID: \`${productId}\`, Uses per item: \`${customUses}\`)!\n📦 Available: **${totalAvailable}**`);
-                } 
-            
-                if (category === 'file') {
-                    if (!uploadedFile) {
-                        return interaction.editReply('❌ **Error:** You must attach a file using the file upload option when adding game files.');
-                    }
-                    stockDB.file.push({ 
-                        id: nextId,
-                        url: uploadedFile.url, 
-                        name: uploadedFile.name, 
-                        used: false,
-                        usesLeft: customUses,
-                        maxUses: customUses,
-                        productId,
-                        uniqueId
-                    });
-                    await saveStockDB(stockDB);
-                    const totalAvailable = stockDB.file.filter(i => !i.used).length;
-                    return interaction.editReply(`✅ Successfully added file **\`${uploadedFile.name}\`** as **#${String(nextId).padStart(5, '0')}** (Product ID: \`${productId}\`, Uses: \`${customUses}\`) to **FILE** stock!\n📦 Available: **${totalAvailable}**`);
-                }
-            }
-
-            if (subcommand === 'list') {
-                const codeAvailable = stockDB.code.filter(i => !i.used).length;
-                const fileAvailable = stockDB.file.filter(i => !i.used).length;
-
-                return interaction.editReply({
-                    content: `📦 **Stock Status Overview:**\n` +
-                             `• **Codes:** ${codeAvailable} available\n` +
-                             `• **Game Files:** ${fileAvailable} available`
-                });
-            }
+            return interaction.editReply({
+                content: `📦 **Stock Status Overview:**\n` +
+                         `• **Codes:** ${codeAvailable} available\n` +
+                         `• **Game Files:** ${fileAvailable} available`
+            });
         }
 
         if (interaction.commandName === 'help') {
@@ -434,7 +405,7 @@ client.on('interactionCreate', async interaction => {
                 .setTitle('🤖 Bot Instructions & Help')
                 .addFields(
                     { name: '🛒 For Buyers', value: `1. Generate your key in-game.\n2. Open the check menu in-game to verify and redeem your key directly into your Discord DMs.` },
-                    { name: '🛠️ For Admins', value: '• Use `/stock add` to manage items, and use setup commands as needed.' }
+                    { name: '🛠️ For Admins/Sellers', value: '• Use `/setup` to configure your Roblox ID and input stock codes or file links (1 key = 1 item).' }
                 );
 
             return await interaction.editReply({ embeds: [helpEmbed] });
